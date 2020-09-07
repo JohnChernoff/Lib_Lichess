@@ -1,127 +1,134 @@
 package org.chernovia.lichess.util;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.net.URL;
+import java.util.Iterator;
 
-import org.chernovia.lichess.gson.GameData;
-import org.chernovia.lichess.gson.LichessUser;
+import org.chernovia.lib.chess.ChessGame;
+import org.chernovia.lib.chess.ChessUtils;
+import org.chernovia.lib.chess.ChessVector;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import sun.net.www.protocol.http.HttpURLConnection;
-import com.google.gson.Gson;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class LichessUtils {
 	
-	public static String cr = "\n";
+	private LichessUtils() { throw new IllegalStateException("Utility class"); }
 	
-	public static LichessUser getUser(String user) {
-		try {
-			URL url = new URL("http://en.lichess.org/api/user/" + user);
-			HttpURLConnection con = (HttpURLConnection) url.openConnection();
-			con.setRequestMethod("GET");
-			StringBuffer responseData = new StringBuffer();
-			InputStreamReader in = new InputStreamReader((InputStream)con.getContent());
-			BufferedReader br = new BufferedReader(in);
-			String line; 
-			do {
-			    line = br.readLine();
-			    if (line != null) { responseData.append(line); }
-			} while (line != null);
-			//System.out.println(responseData);
-			Gson g = new Gson();
-			return g.fromJson(responseData.toString(), LichessUser.class);
+	static final ObjectMapper mapper = new ObjectMapper();
+	static long waitTime = 5000;
+	static long lastQuery = 0;
+	static boolean noCheck = true;
+	
+	public static JsonNode getUser(String user) {
+		queueChk();
+		try { return mapper.readTree(Jsoup.connect(
+				"https://lichess.org/api/user/" + user).
+				ignoreContentType(true).
+				header("Accept","application/json").
+				validateTLSCertificates(false).get().body().text());  
 		}
-		catch (Exception augh) { augh.printStackTrace(); return null; }
+		catch (Exception e) { e.printStackTrace(); return null; }
 	}
 	
-	public static GameData getGame(String gid) { 
-		return getGame(gid, "?with_moves=1&with_fens=1&with_opening=1");
+	public static String getUserGID(String user) {
+		queueChk();
+		JsonNode usr = getUser(user);
+		try { 
+			JsonNode gidURL = usr != null ? usr.get("playing") : null;
+			if (gidURL != null) return gidURL.asText().split("/")[3];
+		} 
+		catch (Exception e) { e.printStackTrace(); }
+		return null;
 	}
-	public static GameData getGame(String gid, String extras) {
-		//BUG: lichess API is broken, no longer provides FENs from ongoing games
-		//System.out.println("Fetching Game ID: " + gid);
-		try {
-			URL url = new URL("http://en.lichess.org/api/game/" + gid + extras);
-			HttpURLConnection con = (HttpURLConnection) url.openConnection();
-			con.setRequestMethod("GET");
-			StringBuffer responseData = new StringBuffer();
-			InputStreamReader in = new InputStreamReader((InputStream)con.getContent());
-			BufferedReader br = new BufferedReader(in);
-			String line; 
-			do {
-			    line = br.readLine();
-			    if (line != null) { responseData.append(line); }
-			} while (line != null);
-			//System.out.println(responseData);
-			Gson g = new Gson();
-			return g.fromJson(responseData.toString(), GameData.class);
+	
+	public static Iterator<JsonNode> getGames(String oauth) {
+		queueChk();
+		try { 
+			return mapper.readTree(Jsoup.connect(
+				"https://lichess.org/api/account/playing").
+				ignoreContentType(true).
+				header("Accept","application/json").
+				header("Authorization","Bearer " + oauth).
+				validateTLSCertificates(false).get().body().text()).get("nowPlaying").elements();  
 		}
-		catch (Exception augh) { augh.printStackTrace(); return null; }
+		catch (Exception e) { e.printStackTrace(); return null; }
 	}
 	
-	public static String getGameJSON(String gid) {
+	//TODO: update API
+	public static JsonNode getGameByGID(String gid) {
 		try {
-			return Jsoup.connect(
-			"https://en.lichess.org/"+gid).ignoreContentType(true).header(
-			"Content-Type","application/x-www-form-urlencoded").header(
-			"Accept","application/vnd.lichess.v2+json").validateTLSCertificates(false).
-			get().body().text(); 
+			return mapper.readTree(Jsoup.connect(
+			"https://en.lichess.org/"+gid).ignoreContentType(true).
+			header("Content-Type","application/x-www-form-urlencoded").
+			header("Accept","application/vnd.lichess.v2+json").
+			validateTLSCertificates(false).
+			get().body().text()); 
 		} catch (IOException e) { e.printStackTrace(); return null; }	
 	}
 	
-	public static String[] getTVData(String gameType) {
+	public static String[] getTVDataList(String game_type) {
+		queueChk();
 		Document doc;
 		try {
 			doc = Jsoup.connect(
-			"https://en.lichess.org/games/" + gameType).ignoreContentType(false).header(
+			"https://en.lichess.org/games/" + game_type).ignoreContentType(false).header(
 			"Content-Type","application/xhtml+xml").validateTLSCertificates(false).get();
-			//System.out.println(doc);
 			Elements gameIDs = doc.select("[data-live]");
 			String[] data = new String[gameIDs.size()]; int i=0;
 			for (Element e: gameIDs) {
-				//System.out.println("Attribute: " + e.attr("data-live"));
 				data[i++] = e.attr("data-live");
 			}
 			return data;
 		} catch (IOException e) { e.printStackTrace(); return null; }
-	} 
-	
-	
-	public static String getUserData(String user,String id) {
-		Document doc;
-		try {
-			doc = Jsoup.connect(
-			"https://en.lichess.org/api/user/" + user).ignoreContentType(false).header(
-			"Content-Type","application/xhtml+xml").get();
-			//System.out.println(doc);
-			//doc.getElementsByAttribute(id)
-			Elements data = doc.getAllElements();
-			for (Element e: data) {
-				System.out.println("ergh: " + e.toString());
-			}
-			return doc.getElementById(id).toString();
-		} catch (IOException e) { e.printStackTrace(); return e.getMessage(); }
-	} 
-		
-	public static String getPgn(String id) {
-		GameData data = getGame(id); if (data == null) return null;
-		String pgn = 
-				"[White \"" + data.players.white.userId + "\"]" + cr +
-				"[Black \"" + data.players.black.userId + "\"]" + cr + 
-				"[Plycount \"" + data.turns + "\"]" + cr +
-				cr;
-		
-		String[] moves = data.moves.split(" ");
-		for (int i=0;i<moves.length;i++) {
-			if (i % 2 == 0) pgn += ((i/2)+1) + "." + moves[i] + " ";
-			else pgn += moves[i] + " ";
-		}
-		
-		return pgn + "*";
 	}
+	
+	public static String getTVData(String gameType) {
+		queueChk();
+		try { return mapper.readTree(new URL("https://lichess.org/tv/channels")).get(gameType).get("gameId").asText();	} 
+		catch (Exception e) { e.printStackTrace(); } 
+		return null;
+	}
+	
+	public static String makeMove(String gid, String move, String oauth) {
+		queueChk();
+		try { return Jsoup.connect(
+				"https://lichess.org/api/board/game/" + gid + "/move/" + move).
+				ignoreContentType(true).
+				header("Accept","application/json").
+				header("Authorization","Bearer " + oauth).
+				validateTLSCertificates(false).post().body().text();  
+		}
+		catch (Exception e) { return e.getMessage(); }
+	}
+	
+	public static String makeMove(int piece, ChessVector to, String oauth) {
+		JsonNode gameNode = getGames(oauth).next();
+		if (gameNode == null) return "Game not found";
+		piece = Math.abs(piece) * (gameNode.get("color").asText().equals("white") ? 1 : -1);
+		String fen = gameNode.get("fen").asText();
+		ChessGame game = new ChessGame(fen);
+		ChessVector from = game.findPiece(piece,to);
+		if (from != null) {
+			String move = ChessUtils.coord2alg(from) + ChessUtils.coord2alg(to);
+			String gid = gameNode.get("gameId").asText();
+			return makeMove(gid, move, oauth);
+		}
+		else return "Bad move: " + piece + " -> " + to;
+	}
+	
+	private static void queueChk() {
+		if (noCheck) return;
+		long lag = System.currentTimeMillis() - lastQuery;
+		if (lag < waitTime) {
+			System.out.println("Waiting " + lag + " milliseconds...");
+			try { Thread.sleep(lag); } catch (InterruptedException ignore) {} 
+		}
+		lastQuery = System.currentTimeMillis();
+	}
+	
 }
+
